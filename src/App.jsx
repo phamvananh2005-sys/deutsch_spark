@@ -74,7 +74,7 @@ const dict = {
     selectTopic: "Chọn chủ đề thuyết trình:",
     selectTopicHolder: "-- Bấm để chọn một chủ đề --",
     reqLevel: "Yêu cầu (Mức độ {0}):",
-    hintModel: "Gợi ý bài nói mẫu:",
+    hintModel: "Bài nói mẫu:",
     uploadOrRec: "Tải lên hoặc thu âm bài nói của bạn:",
     startGrading: "Bắt đầu chấm điểm AI",
     cancel: "✕ Hủy",
@@ -82,7 +82,7 @@ const dict = {
     gradeAnother: "Chấm bài khác",
     exportPDF: "XUẤT PHIẾU PDF",
     reportTitle: "PHIẾU ĐÁNH GIÁ KỸ NĂNG NÓI",
-    analyzedBy: "Phân tích bởi Deutsch Spark Generative AI",
+    analyzedBy: "Phân tích bởi Deutsch Spark GPT AI",
     student: "Học Viên",
     originalAudio: "Bản ghi âm gốc:",
     avgScore: "Điểm trung bình / 10",
@@ -155,7 +155,7 @@ const dict = {
     selectTopic: "Select Presentation Topic:",
     selectTopicHolder: "-- Click to select a topic --",
     reqLevel: "Requirement (Level {0}):",
-    hintModel: "Suggested Model Speech:",
+    hintModel: "Model Speech:",
     uploadOrRec: "Upload or record your speech:",
     startGrading: "Start AI Grading",
     cancel: "✕ Cancel",
@@ -163,7 +163,7 @@ const dict = {
     gradeAnother: "Grade Another",
     exportPDF: "EXPORT PDF",
     reportTitle: "SPEAKING SKILL ASSESSMENT",
-    analyzedBy: "Analyzed by Deutsch Spark Generative AI",
+    analyzedBy: "Analyzed by Deutsch Spark GPT AI",
     student: "Student",
     originalAudio: "Original Recording:",
     avgScore: "Average Score / 10",
@@ -189,6 +189,82 @@ const dict = {
 };
 
 const LanguageContext = createContext();
+
+
+// --- HELPER: chọn giọng đọc tiếng Đức rõ hơn cho phần nghe mẫu ---
+const getBestGermanVoice = () => {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+
+  return (
+    voices.find(v => v.lang === 'de-DE' && /google|microsoft|premium|natural|anna|markus|katja|conrad|hedda|vicki/i.test(v.name)) ||
+    voices.find(v => v.lang === 'de-AT' && /google|microsoft|premium|natural/i.test(v.name)) ||
+    voices.find(v => v.lang === 'de-CH' && /google|microsoft|premium|natural/i.test(v.name)) ||
+    voices.find(v => v.lang.startsWith('de') && /google|microsoft|premium|natural|anna|markus|katja|conrad|hedda|vicki/i.test(v.name)) ||
+    voices.find(v => v.lang === 'de-DE') ||
+    voices.find(v => v.lang.startsWith('de')) ||
+    null
+  );
+};
+
+// Làm sạch text trước khi đưa vào Text-to-Speech.
+// Nếu admin nhập [Deutsch|gợi ý đọc], máy sẽ đọc phần tiếng Đức thật, không đọc phần gợi ý.
+const cleanGermanTextForTTS = (textRaw = '') => {
+  return String(textRaw)
+    .replace(/\[([^|]+)\|([^\]]+)\]/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const speakGermanSample = ({ textRaw, speedMode = 'normal', level = 'A1', onStart, onEnd }) => {
+  if (!('speechSynthesis' in window)) {
+    alert('Trình duyệt của bạn không hỗ trợ đọc mẫu.');
+    return;
+  }
+
+  const cleanText = cleanGermanTextForTTS(textRaw);
+  if (!cleanText) return;
+
+  window.speechSynthesis.cancel();
+  onStart?.(speedMode);
+
+  const speakNow = () => {
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    const germanVoice = getBestGermanVoice();
+
+    utterance.lang = germanVoice?.lang || 'de-DE';
+    if (germanVoice) utterance.voice = germanVoice;
+
+    const normalRateMap = {
+      A1: 0.82,
+      A2: 0.88,
+      B1: 0.94,
+      B2: 0.98,
+      C1: 1.02,
+      C2: 1.04
+    };
+
+    // Không để quá chậm như 0.35 vì sẽ làm giọng bị kéo dài, méo và khó nghe.
+    utterance.rate = speedMode === 'slow' ? 0.68 : (normalRateMap[level] || 0.9);
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    utterance.onend = () => onEnd?.();
+    utterance.onerror = () => {
+      onEnd?.();
+      alert('Không đọc được âm mẫu. Hãy kiểm tra German voice / tiếng Đức trên trình duyệt hoặc máy tính.');
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length === 0) {
+    window.speechSynthesis.onvoiceschanged = speakNow;
+  } else {
+    speakNow();
+  }
+};
 
 // --- HELPER: Parse pronunciation guide từ cú pháp [German|IPA/reading] ---
 function PronunciationText({ text }) {
@@ -517,7 +593,7 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
   const [tab, setTab] = useState('topics');
   const [editingTopic, setEditingTopic] = useState(null);
   const [editingShadow, setEditingShadow] = useState(null);
-  const [shadowItemsText, setShadowItemsText] = useState('');
+  const [shadowRows, setShadowRows] = useState([{ jp: '', vi: '', en: '' }]);
 
   const [newPwd, setNewPwd] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
@@ -562,10 +638,20 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
 
   const saveShadow = async (isPublished) => {
     if (!editingShadow.title) { alert("Nhập tên bài học!"); return; }
-    const parsedItems = shadowItemsText.split('\n').filter(line => line.trim() !== '').map(line => {
-      const parts = line.split('/').map(p => p.trim());
-      return { jp: parts[0] || '', romaji: parts[1] || '', vi: parts[2] || '', en: parts[3] || '' };
-    });
+
+    const parsedItems = shadowRows
+      .map(row => ({
+        jp: (row.jp || '').trim(),
+        vi: (row.vi || '').trim(),
+        en: (row.en || '').trim()
+      }))
+      .filter(row => row.jp || row.vi || row.en);
+
+    if (parsedItems.length === 0) {
+      alert("Vui lòng nhập ít nhất 1 dòng nội dung shadowing!");
+      return;
+    }
+
     const newShadow = { ...editingShadow, items: parsedItems, isPublished };
     if (!newShadow.id) newShadow.id = 's_' + Date.now();
 
@@ -693,7 +779,23 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
   const startEditTopic = (t) => { setEditingTopic({ ...t }); };
   const startEditShadow = (s) => {
     setEditingShadow({ ...s });
-    setShadowItemsText(s.items.map(i => `${i.jp} / ${i.romaji} / ${i.vi} ${i.en ? `/ ${i.en}` : ''}`).join('\n'));
+    setShadowRows(
+      (s.items && s.items.length > 0)
+        ? s.items.map(i => ({ jp: i.jp || '', vi: i.vi || '', en: i.en || '' }))
+        : [{ jp: '', vi: '', en: '' }]
+    );
+  };
+
+  const updateShadowRow = (index, field, value) => {
+    setShadowRows(rows => rows.map((row, i) => i === index ? { ...row, [field]: value } : row));
+  };
+
+  const addShadowRow = () => {
+    setShadowRows(rows => [...rows, { jp: '', vi: '', en: '' }]);
+  };
+
+  const removeShadowRow = (index) => {
+    setShadowRows(rows => rows.length > 1 ? rows.filter((_, i) => i !== index) : [{ jp: '', vi: '', en: '' }]);
   };
 
   return (
@@ -734,7 +836,7 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
                 <>
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="font-bold text-xl text-slate-800">Kho Chủ đề</h3>
-                    <button onClick={() => setEditingTopic({ id: 't_' + Date.now(), title: '', level: 'A1', req: '', isPublished: false, hint: { jp: '', romaji: '', vi: '', en: '' } })} className="bg-[#DD0000] text-white hover:bg-[#B00000] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-md"><Plus size={18} /> Thêm mới</button>
+                    <button onClick={() => setEditingTopic({ id: 't_' + Date.now(), title: '', level: 'A1', req: '', isPublished: false, hint: { jp: '', vi: '', en: '' } })} className="bg-[#DD0000] text-white hover:bg-[#B00000] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-md"><Plus size={18} /> Thêm mới</button>
                   </div>
                   <div className="space-y-4">
                     {dbTopics.map(topic => (
@@ -773,13 +875,12 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
                   <div className="mb-4"><label className="block text-sm font-bold text-slate-700 mb-1">Yêu cầu</label><textarea value={editingTopic.req} onChange={e => setEditingTopic({ ...editingTopic, req: e.target.value })} className="w-full p-3 border rounded-xl h-20" /></div>
                   <div className="p-4 border rounded-xl bg-slate-50 space-y-3">
                     <label className="block text-sm font-bold text-slate-800 border-b pb-2">Bài nói mẫu</label>
-                    <div className="bg-yellow-50 text-yellow-800 p-3 rounded-lg text-xs font-medium border border-yellow-200">
-                      Có thể nhập trực tiếp tiếng Đức. Nếu cần chú thích phát âm, dùng: <code>[Deutsch|pronunciation]</code>
+                    <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs font-medium border border-blue-200">
+                      Chỉ nhập nội dung theo 3 phần: Tiếng Đức, Tiếng Việt và Tiếng Anh
                     </div>
                     <div><label className="block text-xs font-bold mb-1">Tiếng Đức</label><textarea value={editingTopic.hint.jp} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, jp: e.target.value } })} className="w-full p-2 border rounded-lg h-24" placeholder="VD: Guten Morgen. Ich heiße Anna." /></div>
-                    <div><label className="block text-xs font-bold mb-1">Gợi ý đọc</label><input type="text" value={editingTopic.hint.romaji} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, romaji: e.target.value } })} className="w-full p-2 border rounded-lg" /></div>
-                    <div><label className="block text-xs font-bold mb-1">Tiếng Việt</label><input type="text" value={editingTopic.hint.vi} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, vi: e.target.value } })} className="w-full p-2 border rounded-lg" /></div>
-                    <div><label className="block text-xs font-bold mb-1">Tiếng Anh (Cho giao diện EN)</label><input type="text" value={editingTopic.hint.en || ''} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, en: e.target.value } })} className="w-full p-2 border rounded-lg" /></div>
+                    <div><label className="block text-xs font-bold mb-1">Tiếng Việt</label><textarea value={editingTopic.hint.vi} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, vi: e.target.value } })} className="w-full p-2 border rounded-lg h-20" placeholder="VD: Chào buổi sáng. Tôi tên là Anna." /></div>
+                    <div><label className="block text-xs font-bold mb-1">Tiếng Anh</label><textarea value={editingTopic.hint.en || ''} onChange={e => setEditingTopic({ ...editingTopic, hint: { ...editingTopic.hint, en: e.target.value } })} className="w-full p-2 border rounded-lg h-20" placeholder="VD: Good morning. My name is Anna." /></div>
                   </div>
                   <div className="flex gap-4 mt-8 pt-4 border-t"><button onClick={() => saveTopic(false)} className="flex-1 bg-slate-200 py-3 rounded-xl font-bold">Lưu Nháp</button><button onClick={() => saveTopic(true)} className="flex-1 bg-[#DD0000] text-white py-3 rounded-xl font-bold">Lưu & Public</button></div>
                 </div>
@@ -793,7 +894,7 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
                 <>
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="font-bold text-xl text-slate-800">Kho Shadowing</h3>
-                    <button onClick={() => { setEditingShadow({ id: 's_' + Date.now(), title: '', level: 'A1', type: 'sentence', isPublished: false, items: [] }); setShadowItemsText(''); }} className="bg-[#DD0000] text-white px-4 py-2 rounded-lg font-bold text-sm"><Plus size={18} className="inline" /> Thêm mới</button>
+                    <button onClick={() => { setEditingShadow({ id: 's_' + Date.now(), title: '', level: 'A1', type: 'sentence', isPublished: false, items: [] }); setShadowRows([{ jp: '', vi: '', en: '' }]); }} className="bg-[#DD0000] text-white px-4 py-2 rounded-lg font-bold text-sm"><Plus size={18} className="inline" /> Thêm mới</button>
                   </div>
                   <div className="space-y-4">
                     {dbShadowing.map(shadow => (
@@ -825,16 +926,38 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
                     <div><label className="block text-sm font-bold mb-1">Tên bài học</label><input type="text" value={editingShadow.title} onChange={e => setEditingShadow({ ...editingShadow, title: e.target.value })} className="w-full p-3 border rounded-xl" /></div>
                   </div>
                   <div className="mb-4">
-                    <label className="block text-sm font-bold mb-2">Danh sách Từ vựng / Câu</label>
-                    <div className="bg-yellow-50 text-yellow-800 p-4 rounded-xl text-sm font-medium mb-3 border border-yellow-200 shadow-inner">
-                      <p className="mb-2"><strong>Cú pháp bắt buộc:</strong> <code>Tiếng Đức / Gợi ý đọc / Tiếng Việt / Tiếng Anh</code> (Ngăn cách bằng dấu <code>/</code>)</p>
-                      <p className="mb-2"><strong>Chú thích Furigana:</strong> <code>[Từ tiếng Đức|phiên âm/gợi ý đọc]</code></p>
-                      <ul className="list-disc pl-5 space-y-1 mt-2 text-xs opacity-90">
-                        <li>VD Từ vựng: <code>Schule / SHOO-luh / Trường học / School</code></li>
-                        <li>VD Câu văn: <code>Guten Morgen. / GOO-ten MOR-gen / Chào buổi sáng. / Good morning.</code></li>
-                      </ul>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <label className="block text-sm font-bold">Danh sách Từ vựng / Câu</label>
+                      <button onClick={addShadowRow} className="bg-slate-800 text-white px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-slate-700">
+                        <Plus size={14} /> Thêm dòng
+                      </button>
                     </div>
-                    <textarea value={shadowItemsText} onChange={e => setShadowItemsText(e.target.value)} className="w-full p-4 border rounded-xl h-64 font-mono text-sm leading-relaxed" placeholder="Schule / SHOO-luh / Trường học / School" />
+
+                    <div className="bg-blue-50 text-blue-800 p-4 rounded-xl text-sm font-medium mb-3 border border-blue-200 shadow-inner">
+                      Mỗi dòng được chia thành 3 ô riêng: <strong>Tiếng Đức</strong>, <strong>Tiếng Việt</strong>, <strong>Tiếng Anh</strong>
+                    </div>
+
+                    <div className="space-y-3">
+                      {shadowRows.map((row, index) => (
+                        <div key={index} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_auto] gap-3 items-start bg-white border border-slate-200 rounded-2xl p-3 shadow-sm">
+                          <div>
+                            <label className="block text-[11px] font-black text-[#DD0000] mb-1 uppercase">Tiếng Đức</label>
+                            <textarea value={row.jp} onChange={e => updateShadowRow(index, 'jp', e.target.value)} className="w-full p-3 border rounded-xl h-24 text-sm focus:outline-none focus:border-[#DD0000]" placeholder="Schule" />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-black text-slate-600 mb-1 uppercase">Tiếng Việt</label>
+                            <textarea value={row.vi} onChange={e => updateShadowRow(index, 'vi', e.target.value)} className="w-full p-3 border rounded-xl h-24 text-sm focus:outline-none focus:border-[#DD0000]" placeholder="Trường học" />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-black text-slate-600 mb-1 uppercase">Tiếng Anh</label>
+                            <textarea value={row.en} onChange={e => updateShadowRow(index, 'en', e.target.value)} className="w-full p-3 border rounded-xl h-24 text-sm focus:outline-none focus:border-[#DD0000]" placeholder="School" />
+                          </div>
+                          <button onClick={() => removeShadowRow(index)} className="mt-6 md:mt-7 p-2 rounded-xl bg-red-50 text-red-500 hover:bg-red-100" title="Xóa dòng">
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                   <div className="flex gap-4 mt-8 pt-4 border-t"><button onClick={() => saveShadow(false)} className="flex-1 bg-slate-200 py-3 rounded-xl font-bold">Lưu Nháp</button><button onClick={() => saveShadow(true)} className="flex-1 bg-[#DD0000] text-white py-3 rounded-xl font-bold">Lưu & Public</button></div>
                 </div>
@@ -849,6 +972,39 @@ function AdminPanel({ dbTopics, setDbTopics, dbShadowing, setDbShadowing, adminP
 }
 
 
+
+function cleanGermanTargetText(textRaw = '') {
+  return String(textRaw)
+    .replace(/\[([^|]+)\|([^\]]+)\]/g, '$1')
+    .replace(/[“”"'.,!?;:()\[\]{}]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isShortGermanVocabTarget(expectedText = '', mode = '') {
+  if (mode !== 'vocab') return false;
+  const clean = cleanGermanTargetText(expectedText);
+  if (!clean) return false;
+  return clean.split(/\s+/).length <= 2 && clean.length <= 24;
+}
+
+function transcriptLooksLikeWrongLanguageForGerman(transcript = '') {
+  const text = String(transcript || '').trim();
+  if (!text) return false;
+  const hasGermanLettersOrWords = /[a-zäöüß]/i.test(text) || /\b(hallo|danke|bitte|guten|morgen|tschüss|tschuss|ja|nein|ich|du|deutsch)\b/i.test(text);
+  const hasNonLatinScript = /[\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\u0400-\u04FF]/.test(text);
+  return hasNonLatinScript && !hasGermanLettersOrWords;
+}
+
+function buildGermanTranscriptionPrompt(expectedText = '', mode = '') {
+  const cleanExpected = cleanGermanTargetText(expectedText);
+  const shortVocabNote = isShortGermanVocabTarget(expectedText, mode)
+    ? `\nThis is a very short German vocabulary item. The learner is expected to say: "${cleanExpected}". For short words like Hallo, Danke, Bitte, Ja, Nein, Schule, do not identify the audio as Thai or another language just because there is little context.`
+    : '';
+
+  return `This is a German speaking practice recording for a language learning app.${shortVocabNote}\nTranscribe in German only. Keep German umlauts if you hear them. If the audio sounds like the expected German word or sentence, return the German transcript, not another language.`;
+}
+
 function looksMostlyNonGerman(transcript = '') {
   const text = transcript.toLowerCase().trim();
   if (!text) return false;
@@ -858,16 +1014,14 @@ function looksMostlyNonGerman(transcript = '') {
 }
 
 // ---------------------------------------------------------
-// ENGINE CHẤM ĐIỂM GENERATIVE AI (THÔNG MINH)
+// ENGINE CHẤM ĐIỂM GPT AI (THÔNG MINH)
 // ---------------------------------------------------------
 
 function generateGradingResultFallback(transcript, expectedRawText, level, mode, lang, t) {
   const clamp = (val) => Math.min(10.0, Math.max(0.0, parseFloat(val) || 0)).toFixed(1);
 
-  // CẢI TIẾN FALLBACK: Trích xuất cả Kanji và Hiragana để so khớp (Đề phòng STT trả về Hiragana)
-  const cleanExpectedKanji = expectedRawText ? expectedRawText.replace(/\[([^|]+)\|([^\]]+)\]/g, '$1').replace(/[。、！？\s]/g, '') : '';
-  const cleanExpectedHiragana = expectedRawText ? expectedRawText.replace(/\[([^|]+)\|([^\]]+)\]/g, '$2').replace(/[。、！？\s]/g, '') : '';
-  const cleanTranscript = transcript ? transcript.replace(/[。、！？\s]/g, '') : '';
+  const cleanExpected = cleanGermanTargetText(expectedRawText).toLowerCase().replace(/\s/g, '');
+  const cleanTranscript = cleanGermanTargetText(transcript).toLowerCase().replace(/\s/g, '');
 
   let finalScore = 5.0;
   let criteriaObj = {};
@@ -875,12 +1029,17 @@ function generateGradingResultFallback(transcript, expectedRawText, level, mode,
 
   if (mode === 'vocab' || mode === 'sentence') {
     let matchCount = 0;
-    // Gộp Kanji và Hiragana lại để kiểm tra xem STT trả về dạng nào cũng bắt được
-    const targetString = cleanExpectedKanji + cleanExpectedHiragana;
-    for (let char of cleanTranscript) { if (targetString.includes(char)) matchCount++; }
+    for (let char of cleanTranscript) { if (cleanExpected.includes(char)) matchCount++; }
 
-    const matchRate = Math.min(1.0, matchCount / Math.max(1, cleanExpectedKanji.length));
+    const matchRate = Math.min(1.0, matchCount / Math.max(1, cleanExpected.length));
     finalScore = matchRate * 10;
+
+    // Nếu đây là từ vựng tiếng Đức rất ngắn và STT trả về chữ Thái/Nhật/Trung..., không phạt nặng theo transcript lỗi.
+    // GPT vẫn sẽ được ưu tiên chấm ở luồng chính; phần này chỉ dùng khi API lỗi/quá tải.
+    if (isShortGermanVocabTarget(expectedRawText, mode) && transcriptLooksLikeWrongLanguageForGerman(transcript)) {
+      finalScore = 7.5;
+    }
+
     criteriaObj = {
       [t('cPronunciation')]: clamp(finalScore),
       [t('cFluency')]: clamp(finalScore + 0.5)
@@ -922,7 +1081,7 @@ function generateGradingResultFallback(transcript, expectedRawText, level, mode,
   };
 }
 
-const evaluateWithGemini = async (transcript, expectedText, level, mode, lang, requirement = '') => {
+const evaluateWithGPT = async (transcript, expectedText, level, mode, lang, requirement = '') => {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
   const systemPrompt = `Bạn là một giáo viên tiếng Đức giàu kinh nghiệm chuyên dạy phát âm, speaking và giao tiếp thực tế cho người học ngoại ngữ.
 Language for feedback: ${lang === 'en' ? 'English' : 'Vietnamese'}.
@@ -932,10 +1091,15 @@ Topic Requirement: "${requirement || 'None'}"
 Model Answer / Expected German Text: "${expectedText || 'None'}"
 Student's Voice Transcript: "${transcript}"
 
+SHORT VOCABULARY / STT SAFETY:
+- In vocab mode, very short German words such as "Hallo", "Danke", "Bitte", "Ja", "Nein", "Schule" may be mis-transcribed as another language because the audio has very little context.
+- If the expected German text is a short vocabulary item and the transcript looks like Thai/Japanese/Chinese or another unrelated script, treat this as possible speech-to-text uncertainty, not automatic learner failure.
+- In that case, grade leniently around the expected German target, and explain that the transcript was uncertain rather than saying the learner spoke Thai or another language.
+
 CRITICAL LANGUAGE CHECK:
 - This app is ONLY for German speaking practice.
-- If the transcript is mainly Vietnamese, English, Japanese, Chinese, Spanish, French, or any language unrelated to the German task, do not grade normally.
-- In that case, return a low score and clearly tell the learner: ${lang === 'en' ? 'Please speak German for this activity.' : 'Bạn vui lòng nói bằng tiếng Đức đúng theo nội dung luyện tập. Hệ thống chỉ chấm phần nói tiếng Đức.'}
+- If the transcript is mainly Vietnamese, English, Japanese, Chinese, Spanish, French, or any language unrelated to the German task, do not grade normally, EXCEPT when this is a very short vocab item and the transcript likely came from STT language confusion.
+- In a real unrelated-language answer, return a low score and clearly tell the learner: ${lang === 'en' ? 'Please speak German for this activity.' : 'Bạn vui lòng nói bằng tiếng Đức đúng theo nội dung luyện tập. Hệ thống chỉ chấm phần nói tiếng Đức.'}
 - If the learner uses a tiny amount of Vietnamese/English only as filler, but the main answer is German, continue grading.
 
 German pronunciation calibration:
@@ -966,7 +1130,7 @@ Return ONLY a JSON object matching this schema:
 }`;
 
 
-  if (looksMostlyNonGerman(transcript)) {
+  if (looksMostlyNonGerman(transcript) && !(isShortGermanVocabTarget(expectedText, mode) && transcriptLooksLikeWrongLanguageForGerman(transcript))) {
     return {
       score: '2.0',
       level: lang === 'en' ? 'Needs Practice' : 'Cần cố gắng',
@@ -1032,10 +1196,10 @@ Return ONLY a JSON object matching this schema:
 };
 
 // ---------------------------------------------------------
-// COMPONENT: THU ÂM (TÍCH HỢP SPEECH RECOGNITION + OPENAI )
+// COMPONENT: THU ÂM (TÍCH HỢP SPEECH RECOGNITION + OPENAI/GPT)
 // ---------------------------------------------------------
 
-export const AudioInput = ({ onAudioReady }) => {
+export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '' }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
 
@@ -1054,7 +1218,7 @@ export const AudioInput = ({ onAudioReady }) => {
     return new MediaRecorder(stream);
   };
 
-  // 🧠 OpenAI transcribe
+  // 🧠 OpenAI/GPT transcribe
   const transcribe = async (file) => {
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
@@ -1062,6 +1226,8 @@ export const AudioInput = ({ onAudioReady }) => {
     formData.append("file", file);
     formData.append("model", "gpt-4o-mini-transcribe");
     formData.append("language", "de");
+    formData.append("temperature", "0");
+    formData.append("prompt", buildGermanTranscriptionPrompt(expectedText, practiceMode));
 
     const res = await fetch(
       "https://api.openai.com/v1/audio/transcriptions",
@@ -1105,8 +1271,14 @@ export const AudioInput = ({ onAudioReady }) => {
         try {
           finalTranscript = await transcribe(file);
 
+          // Với từ vựng tiếng Đức rất ngắn, nếu STT trả về chữ Thái/Nhật/Trung..., giữ mục tiêu tiếng Đức để GPT không chấm sai do nhận diện nhầm ngôn ngữ.
+          if (isShortGermanVocabTarget(expectedText, practiceMode) && transcriptLooksLikeWrongLanguageForGerman(finalTranscript)) {
+            console.warn("⚠️ STT language confusion detected. Raw transcript:", finalTranscript);
+            finalTranscript = cleanGermanTargetText(expectedText);
+          }
+
           // 🔥 CHỈ log sau khi có kết quả
-          console.log("✅ AI RESULT:", finalTranscript);
+          console.log("✅ GPT TRANSCRIPT RESULT:", finalTranscript);
         } catch (err) {
           console.log("❌ OpenAI error:", err);
         }
@@ -1175,7 +1347,7 @@ export const AudioInput = ({ onAudioReady }) => {
         />
         <h3 className="font-bold text-slate-800">Tải file lên</h3>
         <p className="text-xs text-slate-500 mt-1">
-          Hệ thống sẽ giả lập chấm điểm
+          Khuyên dùng: thu âm trực tiếp
         </p>
       </div>
 
@@ -1257,27 +1429,13 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
   useEffect(() => { if (!studentName) onRequireName(); }, []);
 
   const playModelAudio = (textRaw, speedMode = 'normal') => {
-    if (!('speechSynthesis' in window)) { alert("TTS not supported in your browser."); return; }
-
-    // Đổi $1 (Kanji) thành $2 (Hiragana) để máy đọc chuẩn xác 100% cách phát âm đã quy định
-    const cleanText = textRaw.replace(/\[([^|]+)\|([^\]]+)\]/g, '$2');
-    setIsPlayingModel(speedMode);
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'de-DE';
-
-    if (speedMode === 'slow') {
-      utterance.rate = 0.35;
-    } else {
-      const rateMap = { 'A1': 0.8, 'A2': 0.9, 'B1': 1.0, 'B2': 1.05, 'C1': 1.1 };
-      utterance.rate = currentTopic ? (rateMap[currentTopic.level] || 1.0) : 1.0;
-    }
-
-    utterance.onend = () => setIsPlayingModel(false);
-    utterance.onerror = () => setIsPlayingModel(false);
-
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    speakGermanSample({
+      textRaw,
+      speedMode,
+      level: currentTopic?.level || 'A1',
+      onStart: setIsPlayingModel,
+      onEnd: () => setIsPlayingModel(false)
+    });
   };
 
   const handleAudioReady = (file, url, text, isFile) => {
@@ -1317,7 +1475,7 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
         const topicRequirement = type === 'topic' ? currentTopic?.req || '' : '';
         const levelTarget = type === 'topic' ? currentTopic?.level || 'B1' : 'B1';
 
-        // SỬA LỖI: Cho phép nhận diện cả những từ có 1 ký tự (độ dài === 0 mới báo lỗi)
+        // SỬA LỖI: Cho phép nhận diện cả những từ rất ngắn (độ dài === 0 mới báo lỗi)
         if (!transcript || transcript.trim().length === 0) {
           finalResult = {
             score: '2.0', level: lang === 'en' ? 'Needs Practice' : 'Cần luyện tập thêm',
@@ -1325,7 +1483,7 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
             feedback: lang === 'en' ? 'The system could not clearly recognize what you said. Please check your microphone and speak louder.' : 'Hệ thống không nhận diện rõ bạn nói gì. Vui lòng kiểm tra Micro và thử nói lớn hơn nhé.'
           };
         } else {
-          const apiRes = await evaluateWithGemini(transcript, expectedText, levelTarget, type, lang, topicRequirement);
+          const apiRes = await evaluateWithGPT(transcript, expectedText, levelTarget, type, lang, topicRequirement);
           if (apiRes) {
             finalResult = {
               score: apiRes.score,
@@ -1409,9 +1567,8 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
                     </div>
                     <div className="space-y-3">
                       <div className="text-lg font-medium text-slate-900 tracking-wide break-words">
-                        <PronunciationText text={currentTopic.hint.jp} />
+                        {currentTopic.hint.jp}
                       </div>
-                      <p className="text-sm font-mono text-[#DD0000] leading-relaxed mt-2 pt-2 border-t border-slate-100">{currentTopic.hint.romaji}</p>
                       <p className="text-sm text-slate-600 italic border-l-2 border-slate-300 pl-3 leading-relaxed mt-2">{currentTopic.hint[lang] || currentTopic.hint.vi}</p>
                     </div>
                   </div>
@@ -1423,7 +1580,7 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
           <div className="mb-6 mt-8 pt-6 border-t border-slate-200">
             <label className="block text-sm font-bold text-slate-700 mb-3">{t('uploadOrRec')}</label>
             {!selectedFile ? (
-              <AudioInput onAudioReady={handleAudioReady} />
+              <AudioInput onAudioReady={handleAudioReady} expectedText={type === 'topic' ? currentTopic?.hint?.jp || '' : ''} practiceMode={type} />
             ) : (
               <div className="bg-green-50 border border-green-200 rounded-xl p-6 flex flex-col items-center justify-center relative shadow-sm">
                 <button onClick={() => { setSelectedFile(null); setFileUrl(null); setTranscript(null) }} className="absolute top-3 right-4 text-sm text-slate-500 hover:text-red-500 font-bold transition-colors">{t('cancel')}</button>
@@ -1506,27 +1663,13 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
   };
 
   const playModelAudio = (textRaw, speedMode = 'normal') => {
-    if (!('speechSynthesis' in window)) { return; }
-
-    // Đổi $1 (Kanji) thành $2 (Hiragana) để máy đọc chuẩn xác 100% cách phát âm đã quy định
-    const cleanText = textRaw.replace(/\[([^|]+)\|([^\]]+)\]/g, '$2');
-    setIsPlayingModel(speedMode);
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'de-DE';
-
-    if (speedMode === 'slow') {
-      utterance.rate = 0.35;
-    } else {
-      const rateMap = { 'A1': 0.8, 'A2': 0.9, 'B1': 1.0, 'B2': 1.05, 'C1': 1.1 };
-      utterance.rate = rateMap[level] || 1.0;
-    }
-
-    utterance.onend = () => setIsPlayingModel(false);
-    utterance.onerror = () => setIsPlayingModel(false);
-
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    speakGermanSample({
+      textRaw,
+      speedMode,
+      level,
+      onStart: setIsPlayingModel,
+      onEnd: () => setIsPlayingModel(false)
+    });
   };
 
   const handleAudioReady = async (file, url, transcriptStr, isFile) => {
@@ -1548,7 +1691,7 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
       } else {
         const currentItem = selectedLesson.items[currentIndex];
 
-        // SỬA LỖI: Cho phép nhận diện cả những từ vựng có 1 chữ Hán (length === 0 mới báo lỗi)
+        // SỬA LỖI: Cho phép nhận diện cả những từ vựng tiếng Đức rất ngắn (length === 0 mới báo lỗi)
         if (!transcriptStr || transcriptStr.trim().length === 0) {
           res = {
             score: '2.0', level: lang === 'en' ? 'Needs Practice' : 'Cần luyện tập thêm',
@@ -1556,7 +1699,7 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
             feedback: lang === 'en' ? 'The system could not clearly recognize what you said. Please check your microphone and speak louder.' : 'Hệ thống không nhận diện rõ bạn nói gì. Vui lòng kiểm tra Micro và thử nói lớn hơn nhé.'
           };
         } else {
-          const apiRes = await evaluateWithGemini(transcriptStr, currentItem.jp, level, type, lang);
+          const apiRes = await evaluateWithGPT(transcriptStr, currentItem.jp, level, type, lang);
           if (apiRes) {
             res = {
               score: apiRes.score,
@@ -1670,11 +1813,20 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
           <div className="absolute top-0 left-0 w-1.5 h-full bg-[#DD0000] rounded-l-2xl"></div>
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
             <div className="w-full min-w-0">
-              <div className="text-2xl sm:text-3xl md:text-4xl font-medium text-slate-900 mb-4 font-serif tracking-wide leading-relaxed break-words">
-                <PronunciationText text={currentItem.jp} />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <p className="text-xs font-black text-[#DD0000] uppercase mb-2">Tiếng Đức</p>
+                  <div className="text-2xl sm:text-3xl font-medium text-slate-900 font-serif tracking-wide leading-relaxed break-words">{currentItem.jp}</div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <p className="text-xs font-black text-slate-500 uppercase mb-2">Tiếng Việt</p>
+                  <p className="text-sm text-slate-700 italic break-words">{currentItem.vi}</p>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <p className="text-xs font-black text-slate-500 uppercase mb-2">Tiếng Anh</p>
+                  <p className="text-sm text-slate-700 italic break-words">{currentItem.en}</p>
+                </div>
               </div>
-              <p className="text-base font-mono text-[#DD0000] mb-1 break-words">{currentItem.romaji}</p>
-              <p className="text-sm text-slate-500 italic break-words">{currentItem[lang] || currentItem.vi}</p>
             </div>
 
             <div className="flex gap-2 shrink-0 self-start mt-2 sm:mt-0">
@@ -1696,7 +1848,7 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
               <Info size={16} className="inline mr-1" />
               {t('yourTurn')}
             </div>
-            <AudioInput onAudioReady={handleAudioReady} />
+            <AudioInput onAudioReady={handleAudioReady} expectedText={currentItem.jp} practiceMode={type} />
           </div>
         )}
 
