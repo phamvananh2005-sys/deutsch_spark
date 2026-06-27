@@ -191,76 +191,262 @@ const dict = {
 const LanguageContext = createContext();
 
 
-// --- HELPER: chọn giọng đọc tiếng Đức rõ hơn cho phần nghe mẫu ---
-const getBestGermanVoice = () => {
-  if (!('speechSynthesis' in window)) return null;
-  const voices = window.speechSynthesis.getVoices();
+// --- HELPER: German model audio FREE-only, tốc độ gần Google Dịch hơn ---
+// Nguyên tắc:
+// 1) Không dùng Google Cloud/Azure/backend trả phí.
+// 2) Ưu tiên voice German chất lượng tốt có sẵn trong trình duyệt/máy học sinh.
+// 3) Tốc độ Chuẩn/Chậm được hạ xuống gần cảm giác Google Dịch hơn.
+// 4) Câu dài được chia cụm và nghỉ nhẹ giữa cụm để nghe điềm đạm, không chạy một mạch.
+let cachedGermanVoices = [];
+let activeGermanUtteranceTimeouts = [];
 
-  return (
-    voices.find(v => v.lang === 'de-DE' && /google|microsoft|premium|natural|anna|markus|katja|conrad|hedda|vicki/i.test(v.name)) ||
-    voices.find(v => v.lang === 'de-AT' && /google|microsoft|premium|natural/i.test(v.name)) ||
-    voices.find(v => v.lang === 'de-CH' && /google|microsoft|premium|natural/i.test(v.name)) ||
-    voices.find(v => v.lang.startsWith('de') && /google|microsoft|premium|natural|anna|markus|katja|conrad|hedda|vicki/i.test(v.name)) ||
-    voices.find(v => v.lang === 'de-DE') ||
-    voices.find(v => v.lang.startsWith('de')) ||
-    null
-  );
+const GERMAN_NORMAL_RATE_BY_LEVEL = {
+  A1: 0.62,
+  A2: 0.65,
+  B1: 0.68,
+  B2: 0.72,
+  C1: 0.76,
+  C2: 0.80
 };
 
-// Làm sạch text trước khi đưa vào Text-to-Speech.
-// Nếu admin nhập [Deutsch|gợi ý đọc], máy sẽ đọc phần tiếng Đức thật, không đọc phần gợi ý.
+const GERMAN_FEMALE_VOICE_PRIORITY_KEYWORDS = [
+  // Các giọng nữ tiếng Đức phổ biến trên Microsoft/Apple/Google nếu máy có.
+  'katja', 'anna', 'vicki', 'hedda', 'marlene', 'petra', 'seraphina',
+  'female', 'woman', 'frau', 'weiblich', 'feminin'
+];
+
+const GERMAN_GOOGLE_VOICE_PRIORITY_KEYWORDS = [
+  'google deutsch', 'google german', 'google de-de', 'google'
+];
+
+const GERMAN_QUALITY_VOICE_PRIORITY_KEYWORDS = [
+  'microsoft', 'natural', 'premium', 'enhanced'
+];
+
+const GERMAN_MALE_VOICE_PENALTY_KEYWORDS = [
+  // Tránh giọng nam khi có giọng nữ/chất lượng tốt phù hợp.
+  'markus', 'conrad', 'hans', 'klaus', 'stefan', 'male', 'man', 'mann', 'männlich', 'junge'
+];
+
+const refreshGermanVoices = () => {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return [];
+  const voices = window.speechSynthesis.getVoices() || [];
+  if (voices.length) cachedGermanVoices = voices;
+  return voices.length ? voices : cachedGermanVoices;
+};
+
+const preloadGermanVoices = () => {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return () => {};
+  refreshGermanVoices();
+
+  const handleVoicesChanged = () => refreshGermanVoices();
+  window.speechSynthesis.addEventListener?.('voiceschanged', handleVoicesChanged);
+  const previousHandler = window.speechSynthesis.onvoiceschanged;
+  window.speechSynthesis.onvoiceschanged = (event) => {
+    handleVoicesChanged();
+    if (typeof previousHandler === 'function') previousHandler.call(window.speechSynthesis, event);
+  };
+
+  return () => {
+    window.speechSynthesis.removeEventListener?.('voiceschanged', handleVoicesChanged);
+    if (window.speechSynthesis.onvoiceschanged !== previousHandler) {
+      window.speechSynthesis.onvoiceschanged = previousHandler || null;
+    }
+  };
+};
+
 const cleanGermanTextForTTS = (textRaw = '') => {
-  return String(textRaw)
+  let text = String(textRaw || '')
+    // Nếu admin nhập [Deutsch|gợi ý đọc], máy chỉ đọc phần tiếng Đức thật.
     .replace(/\[([^|]+)\|([^\]]+)\]/g, '$1')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Nếu giáo viên lỡ paste kiểu "Guten Morgen / Chào buổi sáng / Good morning",
+  // TTS chỉ đọc phần tiếng Đức trước dấu /.
+  if (text.includes(' / ')) text = text.split(' / ')[0].trim();
+
+  return text;
+};
+
+const scoreGermanVoice = (voice) => {
+  const lang = String(voice?.lang || '').toLowerCase();
+  const name = String(voice?.name || '').toLowerCase();
+  let score = 0;
+
+  if (lang === 'de-de') score += 120;
+  else if (lang.startsWith('de-de')) score += 112;
+  else if (lang === 'de-at') score += 84;
+  else if (lang === 'de-ch') score += 78;
+  else if (lang.startsWith('de')) score += 58;
+
+  GERMAN_FEMALE_VOICE_PRIORITY_KEYWORDS.forEach((keyword, index) => {
+    if (name.includes(keyword.toLowerCase())) score += Math.max(24, 118 - index * 5);
+  });
+
+  GERMAN_GOOGLE_VOICE_PRIORITY_KEYWORDS.forEach((keyword, index) => {
+    if (name.includes(keyword.toLowerCase())) score += Math.max(18, 56 - index * 7);
+  });
+
+  GERMAN_QUALITY_VOICE_PRIORITY_KEYWORDS.forEach((keyword, index) => {
+    if (name.includes(keyword.toLowerCase())) score += Math.max(10, 36 - index * 5);
+  });
+
+  GERMAN_MALE_VOICE_PENALTY_KEYWORDS.forEach(keyword => {
+    if (name.includes(keyword.toLowerCase())) score -= 90;
+  });
+
+  if (voice?.localService) score += 2;
+  return score;
+};
+
+const getBestGermanVoice = () => {
+  const voices = refreshGermanVoices();
+  if (!voices.length) return null;
+
+  const germanVoices = voices.filter(voice => String(voice?.lang || '').toLowerCase().startsWith('de'));
+  const ranked = germanVoices
+    .map(voice => ({ voice, score: scoreGermanVoice(voice) }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.voice || null;
+};
+
+const splitGermanIntoGoogleSpeedChunks = (text) => {
+  const cleanText = cleanGermanTextForTTS(text);
+  if (!cleanText) return [];
+
+  const sentenceChunks = cleanText
+    .split(/(?<=[.!?])\s+/)
+    .map(chunk => chunk.trim())
+    .filter(Boolean);
+
+  const chunks = [];
+  sentenceChunks.forEach(sentence => {
+    if (sentence.length <= 68) {
+      chunks.push(sentence);
+      return;
+    }
+
+    const softParts = sentence
+      .split(/(?<=[,;:])\s+/)
+      .map(part => part.trim())
+      .filter(Boolean);
+
+    softParts.forEach(part => {
+      if (part.length <= 68) {
+        chunks.push(part);
+        return;
+      }
+
+      const words = part.split(/\s+/);
+      let current = '';
+      words.forEach(word => {
+        const candidate = current ? `${current} ${word}` : word;
+        if (candidate.length > 54 && current) {
+          chunks.push(current);
+          current = word;
+        } else {
+          current = candidate;
+        }
+      });
+      if (current) chunks.push(current);
+    });
+  });
+
+  return chunks.length ? chunks : [cleanText];
+};
+
+const getGermanSpeechRate = (speedMode = 'normal', level = 'A1') => {
+  if (speedMode === 'slow') return 0.50;
+  const normalizedLevel = String(level || 'A1').trim().toUpperCase();
+  return GERMAN_NORMAL_RATE_BY_LEVEL[normalizedLevel] || 0.64;
+};
+
+const stopGermanSampleAudio = () => {
+  activeGermanUtteranceTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  activeGermanUtteranceTimeouts = [];
+
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
 };
 
 const speakGermanSample = ({ textRaw, speedMode = 'normal', level = 'A1', onStart, onEnd }) => {
-  if (!('speechSynthesis' in window)) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     alert('Trình duyệt của bạn không hỗ trợ đọc mẫu.');
     return;
   }
 
-  const cleanText = cleanGermanTextForTTS(textRaw);
-  if (!cleanText) return;
+  const chunks = splitGermanIntoGoogleSpeedChunks(textRaw);
+  if (!chunks.length) return;
 
-  window.speechSynthesis.cancel();
-  onStart?.(speedMode);
+  stopGermanSampleAudio();
 
   const speakNow = () => {
-    const utterance = new SpeechSynthesisUtterance(cleanText);
     const germanVoice = getBestGermanVoice();
+    const rate = getGermanSpeechRate(speedMode, level);
+    const pitch = 0.94; // hạ nhẹ để giọng đằm hơn, bớt gắt.
+    let index = 0;
+    let finished = false;
 
-    utterance.lang = germanVoice?.lang || 'de-DE';
-    if (germanVoice) utterance.voice = germanVoice;
-
-    const normalRateMap = {
-      A1: 0.82,
-      A2: 0.88,
-      B1: 0.94,
-      B2: 0.98,
-      C1: 1.02,
-      C2: 1.04
+    const finishAll = () => {
+      if (finished) return;
+      finished = true;
+      activeGermanUtteranceTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+      activeGermanUtteranceTimeouts = [];
+      if (typeof onEnd === 'function') onEnd();
     };
 
-    // Không để quá chậm như 0.35 vì sẽ làm giọng bị kéo dài, méo và khó nghe.
-    utterance.rate = speedMode === 'slow' ? 0.68 : (normalRateMap[level] || 0.9);
-    utterance.pitch = 1;
-    utterance.volume = 1;
+    const speakNext = () => {
+      if (index >= chunks.length) {
+        finishAll();
+        return;
+      }
 
-    utterance.onend = () => onEnd?.();
-    utterance.onerror = () => {
-      onEnd?.();
-      alert('Không đọc được âm mẫu. Hãy kiểm tra German voice / tiếng Đức trên trình duyệt hoặc máy tính.');
+      const utterance = new SpeechSynthesisUtterance(chunks[index]);
+      utterance.lang = germanVoice?.lang || 'de-DE';
+      if (germanVoice) utterance.voice = germanVoice;
+
+      utterance.rate = rate;
+      utterance.pitch = pitch;
+      utterance.volume = 1;
+
+      utterance.onend = () => {
+        index += 1;
+        if (index >= chunks.length) {
+          finishAll();
+        } else {
+          // Pause rõ hơn giữa cụm để gần cảm giác Google Dịch, không đọc một mạch.
+          const pauseMs = speedMode === 'slow' ? 720 : 460;
+          const timeoutId = setTimeout(speakNext, pauseMs);
+          activeGermanUtteranceTimeouts.push(timeoutId);
+        }
+      };
+
+      utterance.onerror = () => {
+        finishAll();
+        alert('Không đọc được âm mẫu. Hãy kiểm tra German voice / tiếng Đức trên trình duyệt hoặc máy tính.');
+      };
+
+      window.speechSynthesis.speak(utterance);
     };
 
-    window.speechSynthesis.speak(utterance);
+    if (typeof onStart === 'function') onStart(speedMode);
+    speakNext();
   };
 
-  const voices = window.speechSynthesis.getVoices();
-  if (voices.length === 0) {
-    window.speechSynthesis.onvoiceschanged = speakNow;
+  const voices = refreshGermanVoices();
+  if (!voices || voices.length === 0) {
+    const oldHandler = window.speechSynthesis.onvoiceschanged;
+    window.speechSynthesis.onvoiceschanged = (event) => {
+      refreshGermanVoices();
+      if (typeof oldHandler === 'function') oldHandler.call(window.speechSynthesis, event);
+      speakNow();
+    };
   } else {
     speakNow();
   }
@@ -307,6 +493,10 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState(() => {
     return localStorage.getItem('deutsch_admin_pwd') || 'admin123';
   });
+
+  useEffect(() => {
+    return preloadGermanVoices();
+  }, []);
 
   useEffect(() => {
     const style = document.createElement('style');
