@@ -32,7 +32,7 @@ const dict = {
     received: "Đã nhận",
     step2: "2. Chọn chế độ luyện tập:",
     shadowingTitle: "Shadowing",
-    shadowingDesc: "Bắt chước lại theo từ vựng hoặc câu mẫu. Nghe mẫu, thu âm, nghe lại bản thu của mình và luyện đến khi tự tin hơn.",
+    shadowingDesc: "Bắt chước lại theo từ vựng hoặc câu mẫu. AI đánh giá chi tiết độ chính xác âm tiết. Luyện đến khi đạt chuẩn.",
     topicTitle: "Nói theo chủ đề",
     topicDesc: "Thuyết trình theo chủ đề. Đánh giá đa chiều về độ trôi chảy, bám sát nội dung, từ vựng và ngữ pháp bằng AI.",
     freeTitle: "Nói tự do",
@@ -58,7 +58,7 @@ const dict = {
     chooseOther: "Chọn bài khác",
     listenSlow: "Chậm",
     listenNormal: "Chuẩn",
-    yourTurn: "Hãy nghe mẫu, thu âm lại, rồi nghe lại bản thu của mình để tự so sánh và luyện tập.",
+    yourTurn: "Sử dụng nút Thu âm trực tiếp và bắt chước lại để AI đánh giá độ chính xác.",
     uploadFile: "Tải file lên",
     uploadWarn: "Hệ thống sẽ không thể nhận diện lỗi phát âm chi tiết bằng cách này.",
     recDirect: "Thu âm trực tiếp",
@@ -113,7 +113,7 @@ const dict = {
     received: "Received",
     step2: "2. Select training mode:",
     shadowingTitle: "Shadowing",
-    shadowingDesc: "Imitate vocabulary or sentences. Listen to the sample, record yourself, replay your recording, and practise until you feel more confident.",
+    shadowingDesc: "Imitate vocabulary or sentences. Get detailed AI evaluation of your accuracy.",
     topicTitle: "Topic Speaking",
     topicDesc: "Present on a topic. Multi-dimensional AI evaluation of fluency, relevance, and grammar.",
     freeTitle: "Free Speaking",
@@ -139,7 +139,7 @@ const dict = {
     chooseOther: "Choose another lesson",
     listenSlow: "Slow",
     listenNormal: "Normal",
-    yourTurn: "Listen to the sample, record yourself, then replay your recording to compare and practise.",
+    yourTurn: "Use Direct Record and imitate the sample for AI accuracy check.",
     uploadFile: "Upload File",
     uploadWarn: "System cannot provide detailed pronunciation errors via file upload.",
     recDirect: "Direct Record",
@@ -1199,8 +1199,7 @@ Return ONLY a JSON object matching this schema:
 // COMPONENT: THU ÂM (TÍCH HỢP SPEECH RECOGNITION + OPENAI/GPT)
 // ---------------------------------------------------------
 
-export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '', shadowingOnly = false }) => {
-  const { lang } = useContext(LanguageContext);
+export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '' }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
 
@@ -1269,21 +1268,19 @@ export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '',
 
         let finalTranscript = null;
 
-        if (!shadowingOnly) {
-          try {
-            finalTranscript = await transcribe(file);
+        try {
+          finalTranscript = await transcribe(file);
 
-            // Với từ vựng tiếng Đức rất ngắn, nếu STT trả về chữ Thái/Nhật/Trung..., giữ mục tiêu tiếng Đức để GPT không chấm sai do nhận diện nhầm ngôn ngữ.
-            if (isShortGermanVocabTarget(expectedText, practiceMode) && transcriptLooksLikeWrongLanguageForGerman(finalTranscript)) {
-              console.warn("⚠️ STT language confusion detected. Raw transcript:", finalTranscript);
-              finalTranscript = cleanGermanTargetText(expectedText);
-            }
-
-            // 🔥 CHỈ log sau khi có kết quả
-            console.log("✅ GPT TRANSCRIPT RESULT:", finalTranscript);
-          } catch (err) {
-            console.log("❌ OpenAI error:", err);
+          // Với từ vựng tiếng Đức rất ngắn, nếu STT trả về chữ Thái/Nhật/Trung..., giữ mục tiêu tiếng Đức để GPT không chấm sai do nhận diện nhầm ngôn ngữ.
+          if (isShortGermanVocabTarget(expectedText, practiceMode) && transcriptLooksLikeWrongLanguageForGerman(finalTranscript)) {
+            console.warn("⚠️ STT language confusion detected. Raw transcript:", finalTranscript);
+            finalTranscript = cleanGermanTargetText(expectedText);
           }
+
+          // 🔥 CHỈ log sau khi có kết quả
+          console.log("✅ GPT TRANSCRIPT RESULT:", finalTranscript);
+        } catch (err) {
+          console.log("❌ OpenAI error:", err);
         }
 
         onAudioReady(
@@ -1364,7 +1361,7 @@ export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '',
       >
         {!isRecording && (
           <div className="absolute top-0 right-0 bg-[#DD0000] text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg">
-            {shadowingOnly ? (lang === 'en' ? 'Recommended' : 'Khuyên dùng') : 'Khuyên dùng AI'}
+            Khuyên dùng AI
           </div>
         )}
 
@@ -1398,7 +1395,7 @@ export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '',
               onClick={startRecording}
               className="bg-[#DD0000] hover:bg-[#B00000] text-white px-4 py-1.5 rounded-full text-xs font-bold transition-colors"
             >
-              {shadowingOnly ? (lang === 'en' ? 'Start recording' : 'Bắt đầu thu âm') : 'Chấm điểm bằng giọng nói'}
+              Chấm điểm bằng giọng nói
             </button>
           </>
         )}
@@ -1675,16 +1672,59 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
     });
   };
 
-  const handleAudioReady = async (file, url) => {
+  const handleAudioReady = async (file, url, transcriptStr, isFile) => {
     setRecordedFile(file);
     setRecordedUrl(url);
-    setIsEvaluating(false);
-    setSentenceResult({
-      isShadowingPractice: true,
-      feedback: lang === 'en'
-        ? 'Listen to your recording again, compare it with the sample, then practice it again or move on to the next item.'
-        : 'Hãy nghe lại bản thu của mình, so sánh với mẫu, rồi luyện lại hoặc chuyển sang mục tiếp theo.'
-    });
+    setIsEvaluating(true);
+
+    try {
+      // Đợi 0.5s để UI "Đang phân tích" kịp hiển thị trước khi gọi AI
+      await new Promise(r => setTimeout(r, 500));
+
+      let res;
+      if (isFile) {
+        res = {
+          score: '7.5', level: lang === 'en' ? 'Fair' : 'Khá',
+          criteria: { [t('cPronunciation')]: '7.5', [t('cFluency')]: '7.5' },
+          feedback: lang === 'en' ? "Use Direct Record for accurate evaluation." : "[CHẾ ĐỘ TẢI FILE]\nHệ thống không thể bóc tách lỗi chi tiết từ file ghi âm tải lên. Hãy dùng Thu âm trực tiếp."
+        };
+      } else {
+        const currentItem = selectedLesson.items[currentIndex];
+
+        // SỬA LỖI: Cho phép nhận diện cả những từ vựng tiếng Đức rất ngắn (length === 0 mới báo lỗi)
+        if (!transcriptStr || transcriptStr.trim().length === 0) {
+          res = {
+            score: '2.0', level: lang === 'en' ? 'Needs Practice' : 'Cần luyện tập thêm',
+            criteria: { [t('cPronunciation')]: '2.0', [t('cFluency')]: '2.0' },
+            feedback: lang === 'en' ? 'The system could not clearly recognize what you said. Please check your microphone and speak louder.' : 'Hệ thống không nhận diện rõ bạn nói gì. Vui lòng kiểm tra Micro và thử nói lớn hơn nhé.'
+          };
+        } else {
+          const apiRes = await evaluateWithGPT(transcriptStr, currentItem.jp, level, type, lang);
+          if (apiRes) {
+            res = {
+              score: apiRes.score,
+              level: apiRes.level,
+              criteria: {
+                [t('cPronunciation')]: apiRes.pronunciation_score || "0.0",
+                [t('cFluency')]: apiRes.fluency_score || "0.0",
+                [t('cContentAccuracy')]: apiRes.accuracy_score || "0.0"
+              },
+              feedback: apiRes.feedback
+            };
+          } else {
+            // Fallback an toàn nếu API quá tải
+            res = generateGradingResultFallback(transcriptStr, currentItem.jp, level, type, lang, t);
+          }
+        }
+      }
+      setSentenceResult(res);
+    } catch (error) {
+      console.error("Shadowing Error:", error);
+      const currentItem = selectedLesson.items[currentIndex];
+      setSentenceResult(generateGradingResultFallback(transcriptStr, currentItem.jp, level, type, lang, t));
+    } finally {
+      setIsEvaluating(false);
+    }
   };
 
   const nextItem = () => {
@@ -1808,7 +1848,7 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
               <Info size={16} className="inline mr-1" />
               {t('yourTurn')}
             </div>
-            <AudioInput onAudioReady={handleAudioReady} expectedText={currentItem.jp} practiceMode={type} shadowingOnly />
+            <AudioInput onAudioReady={handleAudioReady} expectedText={currentItem.jp} practiceMode={type} />
           </div>
         )}
 
@@ -1821,21 +1861,23 @@ function ShadowingMode({ studentName, onRequireName, dbShadowing }) {
 
         {sentenceResult && !isEvaluating && (
           <div className="animate-in slide-in-from-bottom-4">
-            <div className="p-6 rounded-2xl border border-blue-200 bg-blue-50 mb-6 shadow-sm">
-              <div className="flex flex-col md:flex-row gap-4 items-start">
-                <CheckCircle2 size={32} className="text-blue-600 shrink-0 mt-1" />
-                <div className="flex-1 w-full">
-                  <h4 className="font-bold text-slate-800 mb-2 text-lg">{lang === 'en' ? 'Recording saved' : 'Đã lưu bản thu'}</h4>
-                  <p className="text-sm text-slate-700 mb-4 leading-relaxed font-medium">{sentenceResult.feedback}</p>
-                  <div className="bg-white/70 p-2 rounded-lg inline-block w-full border border-blue-100">
-                    <audio controls src={recordedUrl} className="h-10 w-full rounded" />
-                  </div>
+            <div className={`p-6 rounded-2xl border shadow-sm ${parseFloat(sentenceResult.score) >= 8.0 ? 'bg-green-50 border-green-200' : parseFloat(sentenceResult.score) >= 6.0 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'} mb-6 flex flex-col md:flex-row gap-6 items-center md:items-start`}>
+
+              <div className={`w-24 h-24 rounded-full flex items-center justify-center flex-col shadow-inner shrink-0 ${parseFloat(sentenceResult.score) >= 8.0 ? 'bg-green-500 text-white' : parseFloat(sentenceResult.score) >= 6.0 ? 'bg-yellow-500 text-white' : 'bg-red-500 text-white'}`}>
+                <span className="font-black text-3xl">{sentenceResult.score}</span>
+              </div>
+
+              <div className="flex-1 w-full text-center md:text-left">
+                <h4 className="font-bold text-slate-800 mb-2 text-lg">{t('analysis')}</h4>
+                <p className="text-sm text-slate-700 mb-4 leading-relaxed font-medium">{sentenceResult.feedback}</p>
+                <div className="bg-white/50 p-2 rounded-lg inline-block w-full">
+                  <audio controls src={recordedUrl} className="h-10 w-full rounded" />
                 </div>
               </div>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 mt-8 pt-6 border-t border-slate-200">
-              <button onClick={() => { setRecordedFile(null); setRecordedUrl(null); setSentenceResult(null); }} className="flex-1 py-4 bg-white border border-slate-300 hover:border-[#DD0000] hover:text-[#DD0000] text-slate-700 font-bold rounded-xl transition-colors flex items-center justify-center gap-2">
+              <button onClick={() => { setRecordedFile(null); setSentenceResult(null); }} className="flex-1 py-4 bg-white border border-slate-300 hover:border-[#DD0000] hover:text-[#DD0000] text-slate-700 font-bold rounded-xl transition-colors flex items-center justify-center gap-2">
                 <RefreshCcw size={18} /> {t('tryAgain')}
               </button>
               <button onClick={nextItem} className="flex-1 py-4 bg-[#DD0000] hover:bg-[#B00000] text-white font-black tracking-wide rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-red-500/30">
