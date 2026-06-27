@@ -1209,113 +1209,144 @@ function looksMostlyNonGerman(transcript = '') {
 
 function generateGradingResultFallback(transcript, expectedRawText, level, mode, lang, t) {
   const clamp = (val) => Math.min(10.0, Math.max(0.0, parseFloat(val) || 0)).toFixed(1);
-
-  const cleanExpected = cleanGermanTargetText(expectedRawText).toLowerCase().replace(/\s/g, '');
-  const cleanTranscript = cleanGermanTargetText(transcript).toLowerCase().replace(/\s/g, '');
+  const cleanTranscript = cleanGermanTargetText(transcript);
+  const wordCount = cleanTranscript ? cleanTranscript.split(/\s+/).length : 0;
 
   let finalScore = 5.0;
   let criteriaObj = {};
   let estimatedLevel = '';
 
-  if (mode === 'vocab' || mode === 'sentence') {
-    let matchCount = 0;
-    for (let char of cleanTranscript) { if (cleanExpected.includes(char)) matchCount++; }
-
-    const matchRate = Math.min(1.0, matchCount / Math.max(1, cleanExpected.length));
-    finalScore = matchRate * 10;
-
-    // Nếu đây là từ vựng tiếng Đức rất ngắn và STT trả về chữ Thái/Nhật/Trung..., không phạt nặng theo transcript lỗi.
-    // GPT vẫn sẽ được ưu tiên chấm ở luồng chính; phần này chỉ dùng khi API lỗi/quá tải.
-    if (isShortGermanVocabTarget(expectedRawText, mode) && transcriptLooksLikeWrongLanguageForGerman(transcript)) {
-      finalScore = 7.5;
-    }
+  if (mode === 'topic') {
+    if (wordCount < 5) finalScore = 4.0;
+    else if (wordCount < 15) finalScore = 6.0;
+    else if (wordCount < 35) finalScore = 7.2;
+    else finalScore = 8.0;
 
     criteriaObj = {
-      [t('cPronunciation')]: clamp(finalScore),
-      [t('cFluency')]: clamp(finalScore + 0.5)
-    };
-  } else if (mode === 'topic') {
-    if (cleanTranscript.length < 15) {
-      finalScore = 4.0;
-    } else {
-      finalScore = Math.min(9.5, 6.0 + (cleanTranscript.length / 40));
-    }
-    criteriaObj = {
-      [t('cPronunciation')]: clamp(finalScore - 0.5),
-      [t('cTopicRelevance')]: clamp(finalScore + 0.2),
-      [t('cCompleteness')]: clamp(finalScore),
-      [t('cFluency')]: clamp(finalScore + 0.4),
-      [t('cGrammar')]: clamp(finalScore - 0.3),
-      [t('cVocabRichness')]: clamp(finalScore + 0.3),
-      [t('cNaturalness')]: clamp(finalScore - 0.4)
-    };
-  } else {
-    finalScore = Math.min(9.5, 5.0 + (cleanTranscript.length / 50));
-    criteriaObj = {
-      [t('cPronunciation')]: clamp(finalScore - 0.5),
+      [t('cPronunciation')]: clamp(finalScore - 0.3),
+      [t('cGrammar')]: clamp(finalScore - 0.4),
+      [t('cVocab')]: clamp(finalScore - 0.2),
+      [t('cCompleteness')]: clamp(wordCount >= 25 ? finalScore : finalScore - 0.8),
       [t('cFluency')]: clamp(finalScore),
-      [t('cGrammar')]: clamp(finalScore - 0.3)
+      [t('cTopicRelevance')]: clamp(finalScore + 0.2)
     };
-    if (cleanTranscript.length > 100) estimatedLevel = 'B2';
-    else if (cleanTranscript.length > 50) estimatedLevel = 'B1';
-    else if (cleanTranscript.length > 20) estimatedLevel = 'A2';
+  } else if (mode === 'free') {
+    if (wordCount < 5) finalScore = 4.0;
+    else if (wordCount < 15) finalScore = 6.0;
+    else if (wordCount < 35) finalScore = 7.0;
+    else finalScore = 8.0;
+
+    criteriaObj = {
+      [t('cPronunciation')]: clamp(finalScore - 0.3),
+      [t('cFluency')]: clamp(finalScore),
+      [t('cGrammar')]: clamp(finalScore - 0.4),
+      [t('cVocab')]: clamp(finalScore - 0.2),
+      [t('cIdeaDev')]: clamp(wordCount >= 25 ? finalScore : finalScore - 0.7)
+    };
+
+    if (wordCount > 70) estimatedLevel = 'B2';
+    else if (wordCount > 35) estimatedLevel = 'B1';
+    else if (wordCount > 15) estimatedLevel = 'A2';
     else estimatedLevel = 'A1';
+  } else {
+    finalScore = 0.0;
+    criteriaObj = {};
   }
 
   return {
     score: clamp(finalScore),
-    level: lang === 'en' ? (finalScore > 8 ? 'Good' : 'Needs Practice') : (finalScore > 8 ? 'Giỏi' : 'Cần luyện thêm'),
+    level: lang === 'en' ? (finalScore >= 8 ? 'Good' : finalScore >= 6 ? 'Fair' : 'Needs Practice') : (finalScore >= 8 ? 'Giỏi' : finalScore >= 6 ? 'Khá' : 'Cần cố gắng'),
     estimated_cefr: estimatedLevel,
     criteria: criteriaObj,
-    feedback: lang === 'en' ? "This is a basic evaluation. Please connect to internet for full AI Analysis." : "Đây là đánh giá cơ bản. Hãy kết nối mạng để AI Phân tích chi tiết lỗi ngữ pháp và phát âm."
+    feedback: lang === 'en'
+      ? "Điểm mạnh\n✓ The system received your recording.\n\nLỗi cần sửa\n△ Full AI analysis is temporarily unavailable, so detailed German error locations could not be extracted.\n\nGợi ý luyện tập\n→ Please try again when the AI connection is stable."
+      : "Điểm mạnh\n✓ Hệ thống đã nhận được bản ghi âm của bạn.\n\nLỗi cần sửa\n△ Hiện chưa thể phân tích AI đầy đủ, nên hệ thống chưa chỉ ra được chính xác từng lỗi tiếng Đức trong bài nói.\n\nGợi ý luyện tập\n→ Bạn hãy thử chấm lại khi kết nối AI ổn định hơn."
   };
 }
 
 const evaluateWithGPT = async (transcript, expectedText, level, mode, lang, requirement = '') => {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  const systemPrompt = `Bạn là một giáo viên tiếng Đức giàu kinh nghiệm chuyên dạy phát âm, speaking và giao tiếp thực tế cho người học ngoại ngữ.
+  const systemPrompt = `Bạn là giáo viên tiếng Đức chuyên chấm nói cho học sinh Việt Nam. Bạn phải chấm theo RUBRIC TIẾNG ĐỨC bên dưới và phản hồi đúng ngôn ngữ yêu cầu.
+
 Language for feedback: ${lang === 'en' ? 'English' : 'Vietnamese'}.
-Task Mode: ${mode} (vocab = single word, sentence = shadowing, topic = presentation, free = unstructured speech).
+Task Mode: ${mode} (topic = Guided Speaking / nói theo chủ đề có hướng dẫn, free = Free Speaking / nói tự do).
 Student CEFR Target Level: ${level}.
-Topic Requirement: "${requirement || 'None'}"
-Model Answer / Expected German Text: "${expectedText || 'None'}"
-Student's Voice Transcript: "${transcript}"
+Topic Requirement / danh sách ý cần đề cập: "${requirement || 'None'}"
+Model Answer / bài mẫu tham khảo: "${expectedText || 'None'}"
+Student Voice Transcript: "${transcript}"
 
-SHORT VOCABULARY / STT SAFETY:
-- In vocab mode, very short German words such as "Hallo", "Danke", "Bitte", "Ja", "Nein", "Schule" may be mis-transcribed as another language because the audio has very little context.
-- If the expected German text is a short vocabulary item and the transcript looks like Thai/Japanese/Chinese or another unrelated script, treat this as possible speech-to-text uncertainty, not automatic learner failure.
-- In that case, grade leniently around the expected German target, and explain that the transcript was uncertain rather than saying the learner spoke Thai or another language.
+QUY TẮC QUAN TRỌNG:
+- App này chỉ chấm tiếng Đức.
+- Nếu học sinh nói chủ yếu bằng tiếng Việt, tiếng Anh, tiếng Pháp, tiếng Tây Ban Nha, tiếng Nhật, tiếng Trung hoặc ngôn ngữ khác không phải tiếng Đức, trả điểm thấp và nhắc học sinh nói bằng tiếng Đức.
+- Phản hồi tiếng Việt phải dùng "bạn". Không dùng "em", "thầy", "cô", "mình", "tôi".
+- Không nhận xét chung chung. Khi có lỗi, phải chỉ ra đúng cụm sai của học sinh và đưa dạng đúng, ví dụ: "Meine Mutter arbeiten → Meine Mutter arbeitet".
+- Không bịa lỗi nếu transcript không thể hiện lỗi đó. Nếu không đủ dữ liệu âm thanh để chắc chắn một lỗi phát âm, hãy nói nhẹ là "có thể" hoặc tập trung vào lỗi thể hiện qua transcript.
+- Shadowing từ và Shadowing câu KHÔNG gọi AI trong app này. Nếu mode là vocab hoặc sentence, vẫn trả lời an toàn nhưng không cần dùng rubric shadowing.
 
-CRITICAL LANGUAGE CHECK:
-- This app is ONLY for German speaking practice.
-- If the transcript is mainly Vietnamese, English, Japanese, Chinese, Spanish, French, or any language unrelated to the German task, do not grade normally, EXCEPT when this is a very short vocab item and the transcript likely came from STT language confusion.
-- In a real unrelated-language answer, return a low score and clearly tell the learner: ${lang === 'en' ? 'Please speak German for this activity.' : 'Bạn vui lòng nói bằng tiếng Đức đúng theo nội dung luyện tập. Hệ thống chỉ chấm phần nói tiếng Đức.'}
-- If the learner uses a tiny amount of Vietnamese/English only as filler, but the main answer is German, continue grading.
+RUBRIC 3 — GUIDED SPEAKING / NÓI THEO CHỦ ĐỀ CÓ HƯỚNG DẪN:
+Mục tiêu: Khả năng tái tạo ngôn ngữ. Học sinh có chủ đề, bài mẫu và danh sách ý cần nói, nhưng KHÔNG bắt buộc lặp lại bài mẫu. Khuyến khích dùng từ ngữ riêng, thêm trải nghiệm cá nhân và mở rộng nội dung.
+Tổng điểm 10 theo trọng số:
+1. Phát âm — 2.0 điểm: nguyên âm dài-ngắn, Umlaut, âm ch, độ dễ hiểu.
+2. Ngữ pháp — 2.0 điểm: sein, haben, động từ thường, chia động từ, trật tự từ cơ bản, giống danh từ.
+3. Từ vựng đúng chủ đề — 1.5 điểm: đúng chủ đề, có đa dạng từ vựng, tránh lặp quá nhiều.
+4. Nội dung đủ ý — 2.0 điểm: đề cập đủ các ý trong yêu cầu. Ví dụ chủ đề gia đình: số người, nghề nghiệp, anh/chị/em, hoạt động chung.
+5. Trôi chảy — 1.5 điểm: ít ngập ngừng, nói thành cụm câu, có kết nối ý.
+6. Liên quan đề bài — 1.0 điểm: bám chủ đề và yêu cầu, nhưng vẫn cho phép diễn đạt sáng tạo.
 
-German pronunciation calibration:
-1. Evaluate like a real German pronunciation teacher, not like a mechanical speech recognition system.
-2. German natural speech includes sentence rhythm, reduction, connected speech, stress patterns, and sentence melody.
-3. In WORD MODE, check short/long vowels, umlauts ä/ö/ü, final consonants, ch, r, and word stress more carefully.
-4. In SENTENCE/TOPIC/FREE MODE, prioritize naturalness, fluency, rhythm, stress pattern, and comprehensibility. Do not punish natural connected speech too harshly.
-5. If the learner speaks too slowly, word-by-word, or robotically, lower the naturalness/fluency score even if individual sounds are acceptable.
-6. Give concrete error analysis: exact word/sound, what is wrong, severity, and practical correction.
-7. When writing Vietnamese feedback, always use "bạn". Do not use "em", "thầy", "cô", "mình", or "tôi".
+Thang phản hồi Guided Speaking:
+- 10 điểm: đủ tất cả yêu cầu, có thông tin cá nhân, tiếng Đức tự nhiên, phát âm rõ, trật tự từ chính xác, nói trôi chảy.
+- 8–9 điểm: hoàn thành hầu hết yêu cầu, có diễn đạt riêng, phát âm khá tốt; còn lỗi nhỏ về chia động từ hoặc từ vựng chưa đa dạng.
+- 6–7 điểm: đúng chủ đề và truyền đạt ý chính; còn thiếu ý bắt buộc, câu đơn giản, ngập ngừng.
+- 4–5 điểm: có liên quan nhưng thiếu nhiều ý, sai cấu trúc cơ bản, bài quá ngắn.
+
+RUBRIC 4 — FREE SPEAKING / NÓI TỰ DO:
+Mục tiêu: Năng lực giao tiếp thực sự. Học sinh được nói về bất kỳ chủ đề nào. KHÔNG đánh giá đúng/sai chủ đề, KHÔNG chấm giống bài mẫu, KHÔNG chấm bám đề. Chỉ đánh giá khả năng sử dụng tiếng Đức.
+Tổng điểm 10 theo trọng số:
+1. Phát âm — 2.5 điểm: độ rõ ràng, nguyên âm dài-ngắn, Umlaut, âm đặc trưng tiếng Đức.
+2. Trôi chảy — 2.5 điểm: nói liên tục, ít ngập ngừng, tốc độ phù hợp.
+3. Ngữ pháp — 2.0 điểm: chia động từ, trật tự từ, giống danh từ, cấu trúc câu.
+4. Từ vựng — 1.5 điểm: độ đa dạng và phù hợp.
+5. Phát triển ý — 1.5 điểm: có giải thích, ví dụ, liên kết ý.
+
+Thang phản hồi Free Speaking:
+- 10 điểm: ý tưởng rõ, có ví dụ, ngôn ngữ tự nhiên, phát âm tốt, dùng từ nối hợp lý.
+- 8–9 điểm: có quan điểm cá nhân rõ, trình bày khá mạch lạc; cần giải thích sâu hơn hoặc giảm lặp từ.
+- 6–7 điểm: diễn đạt được ý cơ bản; còn đơn giản, nhiều khoảng dừng, từ vựng hạn chế.
+- 4–5 điểm: nội dung quá ngắn, nhiều lỗi ngữ pháp cơ bản, AI khó hiểu một số đoạn.
+
+FORMAT PHẢN HỒI BẮT BUỘC trong trường feedback:
+Điểm mạnh
+✓ ...
+✓ ...
+
+Lỗi cần sửa
+△ Cụm sai của học sinh → đúng: ...
+△ ...
+
+Gợi ý luyện tập
+→ ...
+→ ...
+
+Với Free Speaking, nên gợi ý công thức: Meinung → Grund → Beispiel → Schluss khi phù hợp.
+Ví dụ tiếng Đức có thể dùng: Ich reise gern, weil ich neue Kulturen kennenlernen kann. Zum Beispiel war ich letztes Jahr in Berlin. Deshalb möchte ich in Zukunft mehr reisen.
 
 Return ONLY a JSON object matching this schema:
 {
-  "score": "Overall score from 0.0 to 10.0, e.g. 8.5",
+  "score": "Overall weighted score from 0.0 to 10.0, e.g. 8.5",
   "level": "Performance rank. English: Excellent/Good/Fair/Needs Practice. Vietnamese: Xuất sắc/Giỏi/Khá/Cần cố gắng",
   "estimated_cefr": "Estimated CEFR level A1/A2/B1/B2/C1. Mandatory for free mode, otherwise empty.",
-  "feedback": "Detailed, personalized feedback with specific German pronunciation/speaking advice.",
+  "feedback": "Feedback in the exact required format above.",
   "pronunciation_score": "0.0 to 10.0 string",
   "fluency_score": "0.0 to 10.0 string",
-  "accuracy_score": "0.0 to 10.0 string",
   "grammar_score": "0.0 to 10.0 string",
   "vocab_score": "0.0 to 10.0 string",
+  "content_score": "0.0 to 10.0 string, only meaningful for topic mode",
+  "topic_relevance_score": "0.0 to 10.0 string, only meaningful for topic mode",
+  "idea_score": "0.0 to 10.0 string, only meaningful for free mode",
   "naturalness_score": "0.0 to 10.0 string",
   "severity": "minor/moderate/major",
   "errors": [
-    {"word":"ich", "issue":"Âm ch hơi cứng", "severity":"minor", "suggestion":"Để luồng hơi nhẹ hơn giữa lưỡi và vòm miệng."}
+    {"word":"Meine Mutter arbeiten", "issue":"Sai chia động từ", "severity":"moderate", "suggestion":"Dùng ngôi thứ ba số ít: Meine Mutter arbeitet."}
   ]
 }`;
 
@@ -1509,11 +1540,23 @@ export const AudioInput = ({ onAudioReady, expectedText = '', practiceMode = '',
     setIsRecording(false);
   };
 
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     if (!e.target.files?.length) return;
     const file = e.target.files[0];
 
-    onAudioReady(file, URL.createObjectURL(file), null, true);
+    let finalTranscript = null;
+    // Topic Speaking và Free Speaking vẫn cần transcript để chấm theo rubric.
+    // Shadowing cố ý KHÔNG gọi AI: chỉ lưu file để học sinh nghe lại và tự so sánh với mẫu.
+    if (!shadowingOnly) {
+      try {
+        finalTranscript = await transcribe(file);
+        console.log("✅ GPT TRANSCRIPT RESULT FROM UPLOAD:", finalTranscript);
+      } catch (err) {
+        console.log("❌ OpenAI file transcribe error:", err);
+      }
+    }
+
+    onAudioReady(file, URL.createObjectURL(file), finalTranscript, true);
   };
 
   return (
@@ -1642,64 +1685,92 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
     if (type === 'topic' && !selectedTopicId) { alert(lang === 'en' ? "Please select a topic!" : "Vui lòng chọn một chủ đề!"); return; }
     if (!selectedFile) { alert(lang === 'en' ? "Please provide audio!" : "Vui lòng tải lên hoặc thu âm bài nói!"); return; }
 
-    setStep(1); // Cập nhật state để hiển thị màn hình loading
+    setStep(1);
 
     try {
-      // Đợi 0.5s để React ưu tiên hiển thị UI màn hình Đang Tải trước khi khối lệnh chấm điểm chạy
       await new Promise(r => setTimeout(r, 500));
 
+      const expectedText = type === 'topic' ? currentTopic?.hint?.jp || '' : '';
+      const topicRequirement = type === 'topic' ? currentTopic?.req || '' : '';
+      const levelTarget = type === 'topic' ? currentTopic?.level || 'A1' : 'A1';
+
       let finalResult;
-      if (isFileUpload) {
-        const baseScore = 6.0 + Math.random() * 3.0;
-        const clamp = (val) => Math.min(10.0, Math.max(0.0, parseFloat(val) || 0)).toFixed(1);
+
+      if (!transcript || transcript.trim().length === 0) {
         finalResult = {
-          score: clamp(baseScore),
-          level: lang === 'en' ? (baseScore >= 8 ? 'Good' : 'Fair') : (baseScore >= 8 ? 'Giỏi' : 'Khá'),
-          criteria: {
-            [t('cPronunciation')]: clamp(baseScore - 0.2),
-            [t('cFluency')]: clamp(baseScore)
-          },
+          score: '2.0',
+          level: lang === 'en' ? 'Needs Practice' : 'Cần cố gắng',
+          estimated_cefr: type === 'free' ? 'A1' : '',
+          criteria: type === 'topic'
+            ? {
+                [t('cPronunciation')]: '2.0',
+                [t('cGrammar')]: '2.0',
+                [t('cVocab')]: '2.0',
+                [t('cCompleteness')]: '2.0',
+                [t('cFluency')]: '2.0',
+                [t('cTopicRelevance')]: '2.0'
+              }
+            : {
+                [t('cPronunciation')]: '2.0',
+                [t('cFluency')]: '2.0',
+                [t('cGrammar')]: '2.0',
+                [t('cVocab')]: '2.0',
+                [t('cIdeaDev')]: '2.0'
+              },
           feedback: lang === 'en'
-            ? `[AUDIO FILE UPLOAD MODE]\nDue to browser limits, detailed pronunciation errors cannot be extracted from uploaded files. Use "Direct Record" for full AI capabilities.`
-            : `[CHÚ Ý: BẠN ĐANG TẢI FILE ÂM THANH]\nDo hạn chế của trình duyệt, hệ thống không thể bóc tách từng lỗi ngữ âm chính xác từ file có sẵn. Hãy dùng nút "Thu âm trực tiếp" để AI đọc chính xác từng từ bạn nói nhé!`
+            ? `Điểm mạnh
+✓ The recording was received.
+
+Lỗi cần sửa
+△ The system could not clearly transcribe the German speech.
+
+Gợi ý luyện tập
+→ Please check the microphone/file quality and speak clearly in German.`
+            : `Điểm mạnh
+✓ Hệ thống đã nhận được bản ghi âm.
+
+Lỗi cần sửa
+△ Hệ thống chưa nhận diện rõ phần tiếng Đức trong bản ghi âm.
+
+Gợi ý luyện tập
+→ Bạn hãy kiểm tra micro/file âm thanh và nói rõ hơn bằng tiếng Đức.`
         };
       } else {
-        const expectedText = type === 'topic' ? currentTopic?.hint?.jp || '' : '';
-        const topicRequirement = type === 'topic' ? currentTopic?.req || '' : '';
-        const levelTarget = type === 'topic' ? currentTopic?.level || 'B1' : 'B1';
+        const apiRes = await evaluateWithGPT(transcript, expectedText, levelTarget, type, lang, topicRequirement);
 
-        // SỬA LỖI: Cho phép nhận diện cả những từ rất ngắn (độ dài === 0 mới báo lỗi)
-        if (!transcript || transcript.trim().length === 0) {
-          finalResult = {
-            score: '2.0', level: lang === 'en' ? 'Needs Practice' : 'Cần luyện tập thêm',
-            criteria: { [t('cPronunciation')]: '2.0', [t('cFluency')]: '2.0' },
-            feedback: lang === 'en' ? 'The system could not clearly recognize what you said. Please check your microphone and speak louder.' : 'Hệ thống không nhận diện rõ bạn nói gì. Vui lòng kiểm tra Micro và thử nói lớn hơn nhé.'
-          };
-        } else {
-          const apiRes = await evaluateWithGPT(transcript, expectedText, levelTarget, type, lang, topicRequirement);
-          if (apiRes) {
+        if (apiRes) {
+          if (type === 'topic') {
             finalResult = {
               score: apiRes.score,
               level: apiRes.level,
               estimated_cefr: apiRes.estimated_cefr || '',
               criteria: {
-                [t('cPronunciation')]: apiRes.pronunciation_score || "0.0",
-                [t('cFluency')]: apiRes.fluency_score || "0.0",
+                [t('cPronunciation')]: apiRes.pronunciation_score || '0.0',
+                [t('cGrammar')]: apiRes.grammar_score || '0.0',
+                [t('cVocab')]: apiRes.vocab_score || '0.0',
+                [t('cCompleteness')]: apiRes.content_score || apiRes.accuracy_score || '0.0',
+                [t('cFluency')]: apiRes.fluency_score || '0.0',
+                [t('cTopicRelevance')]: apiRes.topic_relevance_score || apiRes.accuracy_score || '0.0'
               },
               feedback: apiRes.feedback
             };
-            if (type === 'topic') {
-              finalResult.criteria[t('cGrammar')] = apiRes.grammar_score || "0.0";
-              finalResult.criteria[t('cVocabRichness')] = apiRes.vocab_score || "0.0";
-              finalResult.criteria[t('cTopicRelevance')] = apiRes.accuracy_score || "0.0";
-            } else {
-              finalResult.criteria[t('cGrammar')] = apiRes.grammar_score || "0.0";
-              finalResult.criteria[t('cIdeaDev')] = apiRes.vocab_score || "0.0";
-            }
           } else {
-            // Fallback an toàn nếu API quá tải
-            finalResult = generateGradingResultFallback(transcript, expectedText, levelTarget, type, lang, t);
+            finalResult = {
+              score: apiRes.score,
+              level: apiRes.level,
+              estimated_cefr: apiRes.estimated_cefr || '',
+              criteria: {
+                [t('cPronunciation')]: apiRes.pronunciation_score || '0.0',
+                [t('cFluency')]: apiRes.fluency_score || '0.0',
+                [t('cGrammar')]: apiRes.grammar_score || '0.0',
+                [t('cVocab')]: apiRes.vocab_score || '0.0',
+                [t('cIdeaDev')]: apiRes.idea_score || apiRes.naturalness_score || '0.0'
+              },
+              feedback: apiRes.feedback
+            };
           }
+        } else {
+          finalResult = generateGradingResultFallback(transcript, expectedText, levelTarget, type, lang, t);
         }
       }
 
@@ -1708,7 +1779,7 @@ function FreeAndTopicMode({ type, studentName, onRequireName, dbTopics }) {
     } catch (error) {
       console.error("Lỗi khi đánh giá:", error);
       const expectedText = type === 'topic' ? currentTopic?.hint?.jp || '' : '';
-      const levelTarget = type === 'topic' ? currentTopic?.level || 'B1' : 'B1';
+      const levelTarget = type === 'topic' ? currentTopic?.level || 'A1' : 'A1';
       setResult(generateGradingResultFallback(transcript, expectedText, levelTarget, type, lang, t));
       setStep(2);
     }
